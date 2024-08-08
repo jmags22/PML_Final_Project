@@ -1,0 +1,158 @@
+---
+title: "Predictive Modeling for Weight Lifting Exercises"
+author: "Jen M"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Set global chunk options
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# Install necessary packages if not already installed
+if (!requireNamespace("caret", quietly = TRUE)) {
+  install.packages("caret")
+}
+if (!requireNamespace("dplyr", quietly = TRUE)) {
+  install.packages("dplyr")
+}
+if (!requireNamespace("data.table", quietly = TRUE)) {
+  install.packages("data.table")
+}
+if (!requireNamespace("ggplot2", quietly = TRUE)) {
+  install.packages("ggplot2")
+}
+if (!requireNamespace("randomForest", quietly = TRUE)) {
+  install.packages("randomForest")
+}
+if (!requireNamespace("gbm", quietly = TRUE)) {
+  install.packages("gbm")
+}
+
+library(caret)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(randomForest)
+library(gbm)
+```
+
+
+```{r load data, include=TRUE}
+# Load the training and testing data
+training <- fread("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
+testing <- fread("pml-testing.csv", na.strings = c("NA", "#DIV/0!", ""))
+
+# Data cleaning: remove columns with too many NAs
+training <- training[, colSums(is.na(training)) == 0, with = FALSE]
+testing <- testing[, colSums(is.na(testing)) == 0, with = FALSE]
+
+# Remove irrelevant columns (e.g., identifiers, timestamps)
+training <- training %>% select(-c(1:7))
+testing <- testing %>% select(-c(1:7))
+
+# Convert the `classe` variable in training set to a factor
+training$classe <- as.factor(training$classe)
+
+# Ensure column names in training and testing datasets match
+testing <- testing %>% select(names(training)[-ncol(training)])
+```
+
+
+```{r summarize data, include=TRUE}
+# Summary of the training data
+summary(training)
+
+# Plotting the distribution of the target variable 'classe'
+ggplot(training, aes(x = classe)) +
+  geom_bar() +
+  ggtitle("Distribution of Target Variable 'classe'") +
+  xlab("Class") +
+  ylab("Count")
+
+# Pair plot for the first few features
+pairs(training[, 2:6], col = training$classe)
+```
+
+
+```{r Random Forest, include=TRUE}
+# Using Random Forest for feature importance
+set.seed(3523)
+rf_model <- randomForest(classe ~ ., data = training, importance = TRUE)
+importance <- varImp(rf_model, scale = FALSE)
+print(importance)
+
+# Plotting the importance
+varImpPlot(rf_model)
+```
+
+
+```{r split training data, include=TRUE}
+# Split the training data into training and validation sets
+set.seed(3523)
+inTrain <- createDataPartition(training$classe, p = 0.75, list = FALSE)
+trainData <- training[inTrain, ]
+validationData <- training[-inTrain, ]
+
+# Preprocessing: Center and scale the numeric features
+numeric_cols <- names(which(sapply(trainData, is.numeric)))
+preProcValues <- preProcess(trainData[, numeric_cols, with = FALSE], method = c("center", "scale"))
+
+# Apply preprocessing to train, validation, and test sets
+trainData[, (numeric_cols) := predict(preProcValues, trainData[, numeric_cols, with = FALSE])]
+validationData[, (numeric_cols) := predict(preProcValues, validationData[, numeric_cols, with = FALSE])]
+testing[, (numeric_cols) := predict(preProcValues, testing[, numeric_cols, with = FALSE])]
+
+# Train a Random Forest model
+set.seed(62433)
+rf_model <- train(classe ~ ., data = trainData, method = "rf", trControl = trainControl(method = "cv", number = 5))
+
+# Train a Gradient Boosting model
+gbm_model <- train(classe ~ ., data = trainData, method = "gbm", verbose = FALSE, trControl = trainControl(method = "cv", number = 5))
+
+# Train a Linear Discriminant Analysis model
+lda_model <- train(classe ~ ., data = trainData, method = "lda", trControl = trainControl(method = "cv", number = 5))
+```
+
+
+```{r predict, include=TRUE}
+# Predict on the validation set
+rf_pred <- predict(rf_model, validationData)
+gbm_pred <- predict(gbm_model, validationData)
+lda_pred <- predict(lda_model, validationData)
+
+# Calculate accuracy for each model
+rf_accuracy <- confusionMatrix(rf_pred, validationData$classe)$overall['Accuracy']
+gbm_accuracy <- confusionMatrix(gbm_pred, validationData$classe)$overall['Accuracy']
+lda_accuracy <- confusionMatrix(lda_pred, validationData$classe)$overall['Accuracy']
+
+# Print the accuracies
+print(paste("Random Forest Accuracy:", round(rf_accuracy, 4)))
+print(paste("Gradient Boosting Accuracy:", round(gbm_accuracy, 4)))
+print(paste("LDA Accuracy:", round(lda_accuracy, 4)))
+```
+
+
+```{r new data frame, include=TRUE}
+# Combine the predictions into a new data frame
+stacked_predictions <- data.frame(rf_pred, gbm_pred, lda_pred, classe = validationData$classe)
+
+# Train a Random Forest model on the stacked predictions
+stacked_model <- train(classe ~ ., data = stacked_predictions, method = "rf")
+
+# Predict on the validation set using the stacked model
+stacked_pred <- predict(stacked_model, stacked_predictions)
+
+# Evaluate the stacked model performance
+stacked_accuracy <- confusionMatrix(stacked_pred, validationData$classe)$overall['Accuracy']
+print(paste("Stacked Model Accuracy:", round(stacked_accuracy, 4)))
+```
+
+
+```{r prepare predictions, include=TRUE}
+# Make predictions on the test data
+test_predictions <- predict(rf_model, testing)
+
+# Prepare the predictions for submission
+test_predictions
+```
