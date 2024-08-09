@@ -1,158 +1,123 @@
 ---
-title: "Predictive Modeling for Weight Lifting Exercises"
-author: "Jen M"
-date: "`r Sys.Date()`"
+title: "Course Project: Predicting Exercise Methods"
+author: "Jennifer D. Magnuson"
+date: "2024-08-03"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
-# Set global chunk options
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+knitr::opts_chunk$set(echo = TRUE)
+```
 
-# Install necessary packages if not already installed
-if (!requireNamespace("caret", quietly = TRUE)) {
-  install.packages("caret")
-}
-if (!requireNamespace("dplyr", quietly = TRUE)) {
-  install.packages("dplyr")
-}
-if (!requireNamespace("data.table", quietly = TRUE)) {
-  install.packages("data.table")
-}
-if (!requireNamespace("ggplot2", quietly = TRUE)) {
-  install.packages("ggplot2")
-}
-if (!requireNamespace("randomForest", quietly = TRUE)) {
-  install.packages("randomForest")
-}
-if (!requireNamespace("gbm", quietly = TRUE)) {
-  install.packages("gbm")
-}
 
+```{r load libraries, include=TRUE}
+library(randomForest)
 library(caret)
 library(dplyr)
-library(data.table)
-library(ggplot2)
-library(randomForest)
-library(gbm)
 ```
 
 
-```{r load data, include=TRUE}
-# Load the training and testing data
-training <- fread("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
-testing <- fread("pml-testing.csv", na.strings = c("NA", "#DIV/0!", ""))
+```{r load datasets, include=TRUE}
+# Download the training dataset
+train_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+train_data <- read.csv(train_url)
 
-# Data cleaning: remove columns with too many NAs
-training <- training[, colSums(is.na(training)) == 0, with = FALSE]
-testing <- testing[, colSums(is.na(testing)) == 0, with = FALSE]
-
-# Remove irrelevant columns (e.g., identifiers, timestamps)
-training <- training %>% select(-c(1:7))
-testing <- testing %>% select(-c(1:7))
-
-# Convert the `classe` variable in training set to a factor
-training$classe <- as.factor(training$classe)
-
-# Ensure column names in training and testing datasets match
-testing <- testing %>% select(names(training)[-ncol(training)])
+# View the structure of the dataset
+str(train_data)
+summary(train_data)
 ```
 
 
-```{r summarize data, include=TRUE}
-# Summary of the training data
-summary(training)
+```{r data cleaning, include=TRUE}
+# Remove near-zero variance predictors
+nzv <- nearZeroVar(train_data, saveMetrics = TRUE)
+train_data <- train_data[, !nzv$nzv]
 
-# Plotting the distribution of the target variable 'classe'
-ggplot(training, aes(x = classe)) +
-  geom_bar() +
-  ggtitle("Distribution of Target Variable 'classe'") +
-  xlab("Class") +
-  ylab("Count")
+# Remove columns with too many missing values
+train_data <- train_data[, colSums(is.na(train_data)) < nrow(train_data) * 0.95]
 
-# Pair plot for the first few features
-pairs(training[, 2:6], col = training$classe)
+# Remove irrelevant columns
+train_data <- train_data %>%
+  select(-c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp))
+
+# Convert 'classe' in 'training_data' to a factor
+train_data$classe <- as.factor(train_data$classe)
 ```
 
 
-```{r Random Forest, include=TRUE}
-# Using Random Forest for feature importance
-set.seed(3523)
-rf_model <- randomForest(classe ~ ., data = training, importance = TRUE)
-importance <- varImp(rf_model, scale = FALSE)
-print(importance)
+```{r data preprocessing, include=TRUE}
+# Split the data into training and testing sets
+set.seed(123)
+train_index <- createDataPartition(train_data$classe, p = 0.7, list = FALSE)
+training_data <- train_data[train_index, ]
+testing_data <- train_data[-train_index, ]
 
-# Plotting the importance
+# Standardize the data
+preproc <- preProcess(training_data[, -which(names(training_data) == "classe")], method = c("center", "scale"))
+training_data_preprocessed <- predict(preproc, newdata = training_data)
+testing_data_preprocessed <- predict(preproc, newdata = testing_data)
+```
+
+
+```{r model building, include=TRUE}
+# Build the Random Forest model
+rf_model <- randomForest(classe ~ ., data = training_data_preprocessed, importance = TRUE, ntree = 100)
+
+# Evaluate variable importance
+importance(rf_model)
 varImpPlot(rf_model)
 ```
 
 
-```{r split training data, include=TRUE}
-# Split the training data into training and validation sets
-set.seed(3523)
-inTrain <- createDataPartition(training$classe, p = 0.75, list = FALSE)
-trainData <- training[inTrain, ]
-validationData <- training[-inTrain, ]
+```{r cross validation, include=TRUE}
+# Set up cross-validation
+train_control <- trainControl(method = "cv", number = 10)
 
-# Preprocessing: Center and scale the numeric features
-numeric_cols <- names(which(sapply(trainData, is.numeric)))
-preProcValues <- preProcess(trainData[, numeric_cols, with = FALSE], method = c("center", "scale"))
+# Train the model using cross-validation
+set.seed(123)
+cv_model <- train(classe ~ ., data = training_data_preprocessed, method = "rf", trControl = train_control, tuneLength = 3)
 
-# Apply preprocessing to train, validation, and test sets
-trainData[, (numeric_cols) := predict(preProcValues, trainData[, numeric_cols, with = FALSE])]
-validationData[, (numeric_cols) := predict(preProcValues, validationData[, numeric_cols, with = FALSE])]
-testing[, (numeric_cols) := predict(preProcValues, testing[, numeric_cols, with = FALSE])]
+# Print the cross-validation results
+print(cv_model)
+```
 
-# Train a Random Forest model
-set.seed(62433)
-rf_model <- train(classe ~ ., data = trainData, method = "rf", trControl = trainControl(method = "cv", number = 5))
 
-# Train a Gradient Boosting model
-gbm_model <- train(classe ~ ., data = trainData, method = "gbm", verbose = FALSE, trControl = trainControl(method = "cv", number = 5))
+```{r evaluate, include=TRUE}
+# Predict on the testing set
+predictions <- predict(rf_model, newdata = testing_data_preprocessed)
 
-# Train a Linear Discriminant Analysis model
-lda_model <- train(classe ~ ., data = trainData, method = "lda", trControl = trainControl(method = "cv", number = 5))
+# Use a confusion matrix to evaluate accuracy
+confusion_matrix <- confusionMatrix(predictions, testing_data_preprocessed$classe)
+print(confusion_matrix)
+
+# Calculate expected out-of-sample error
+oob_error <- rf_model$err.rate[rf_model$ntree, "OOB"]
+cat("Out-of-sample error rate:", oob_error, "\n")
 ```
 
 
 ```{r predict, include=TRUE}
-# Predict on the validation set
-rf_pred <- predict(rf_model, validationData)
-gbm_pred <- predict(gbm_model, validationData)
-lda_pred <- predict(lda_model, validationData)
+# Download the test dataset
+test_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+test_data <- read.csv(test_url)
 
-# Calculate accuracy for each model
-rf_accuracy <- confusionMatrix(rf_pred, validationData$classe)$overall['Accuracy']
-gbm_accuracy <- confusionMatrix(gbm_pred, validationData$classe)$overall['Accuracy']
-lda_accuracy <- confusionMatrix(lda_pred, validationData$classe)$overall['Accuracy']
+# Ensure columns of test data match those of training data
+common_columns <- intersect(names(training_data_preprocessed), names(test_data))
+test_data <- test_data[, common_columns]
 
-# Print the accuracies
-print(paste("Random Forest Accuracy:", round(rf_accuracy, 4)))
-print(paste("Gradient Boosting Accuracy:", round(gbm_accuracy, 4)))
-print(paste("LDA Accuracy:", round(lda_accuracy, 4)))
-```
+# Add any missing columns in test_data that are present in training_data_preprocessed
+missing_columns <- setdiff(names(training_data_preprocessed), names(test_data))
+for (col in missing_columns) {
+  test_data[[col]] <- NA
+}
 
+# Reorder columns of test_data to match those in training_data_preprocessed
+test_data <- test_data[, names(training_data_preprocessed)]
 
-```{r new data frame, include=TRUE}
-# Combine the predictions into a new data frame
-stacked_predictions <- data.frame(rf_pred, gbm_pred, lda_pred, classe = validationData$classe)
+# Preprocess the test data
+test_data_preprocessed <- predict(preproc, newdata = test_data)
 
-# Train a Random Forest model on the stacked predictions
-stacked_model <- train(classe ~ ., data = stacked_predictions, method = "rf")
-
-# Predict on the validation set using the stacked model
-stacked_pred <- predict(stacked_model, stacked_predictions)
-
-# Evaluate the stacked model performance
-stacked_accuracy <- confusionMatrix(stacked_pred, validationData$classe)$overall['Accuracy']
-print(paste("Stacked Model Accuracy:", round(stacked_accuracy, 4)))
-```
-
-
-```{r prepare predictions, include=TRUE}
-# Make predictions on the test data
-test_predictions <- predict(rf_model, testing)
-
-# Prepare the predictions for submission
-test_predictions
+# Make predictions on the test data using the cross-validated model
+test_predictions <- predict(cv_model, newdata = test_data_preprocessed)
+print(test_predictions)
 ```
